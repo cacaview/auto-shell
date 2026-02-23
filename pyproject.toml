@@ -1,0 +1,24 @@
+[project]
+name = "auto-shell"
+version = "0.1.0"
+description = "终端即为聊天框 - AI 驱动的 Shell 命令生成工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "openai>=1.10.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.26.0",
+]
+
+[project.scripts]
+auto-shell = "auto_shell.cli:main"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+]

@@ -1,0 +1,59 @@
+# auto-shell 配置文件
+
+# LLM API 配置
+llm:
+  # API 基础地址 (支持 OpenAI 兼容的 API)
+  api_base: "http://172.24.224.1:28000/v1"
+  # API 密钥
+  api_key: "sk-92af795330799eddefec7f25cad50179"
+  # 模型名称
+  model: "glm-5"
+  # 温度参数 (越低越确定)
+  temperature: 0.1
+  # 最大 token 数
+  max_tokens: 200
+
+# Daemon 配置
+daemon:
+  # 监听地址
+  host: "127.0.0.1"
+  # 监听端口
+  port: 28001
+  # 日志级别
+  log_level: "info"
+
+# Agent 模式配置
+agent:
+  # 默认模式: default, auto, full_auto
+  default_mode: "default"
+  # 最大迭代次数
+  max_iterations: 10
+  # 允许自动执行的命令白名单 (正则表达式)
+  safe_commands:
+    - "^ls"
+    - "^cat"
+    - "^echo"
+    - "^pwd"
+    - "^which"
+    - "^grep"
+    - "^find"
+    - "^head"
+    - "^tail"
+    - "^wc"
+  # 高危命令黑名单 (需要用户确认)
+  dangerous_commands:
+    - "^rm"
+    - "^sudo"
+    - "^chmod"
+    - "^chown"
+    - "^mkfs"
+    - "^dd"
+    - "^>"
+    - "^>>"
+
+# Shell 插件配置
+shell:
+  # 双击 Tab 时间阈值 (毫秒)
+  double_tab_threshold: 400
+  # 请求超时时间 (秒)
+  request_timeout: 30
