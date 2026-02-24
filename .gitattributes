@@ -1,0 +1,14 @@
+# 所有文本文件统一使用 LF 换行，避免在 WSL / Linux 中出现 \r 语法错误
+* text=auto eol=lf
+
+# Shell 脚本强制 LF
+*.sh   text eol=lf
+*.zsh  text eol=lf
+*.bash text eol=lf
+
+# Python 文件强制 LF
+*.py   text eol=lf
+
+# Windows 批处理文件保留 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf

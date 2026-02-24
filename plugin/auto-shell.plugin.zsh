@@ -104,6 +104,121 @@ function _auto_shell_cycle_submode() {
     zle -R
 }
 
+# ============== 流式 UI 渲染 ==============
+
+# 在光标下方渲染一个信息框（写到 stderr，不干扰 ZLE buffer）
+# 参数: $1=状态行文字, $2=内容行文字(可选), $3=框宽度(可选,默认60)
+function _auto_shell_render_box() {
+    local status_line="${1:-}"
+    local content_line="${2:-}"
+    local box_width="${3:-60}"
+
+    local C_BORDER='\e[38;5;33m'
+    local C_STATUS='\e[38;5;220m'
+    local C_CONTENT='\e[38;5;250m'
+    local C_RESET='\e[0m'
+
+    local max_inner=$(( box_width - 4 ))
+    local s="${status_line:0:$max_inner}"
+    local c="${content_line:0:$max_inner}"
+
+    local border_line
+    printf -v border_line '%0.s─' $(seq 1 $box_width)
+
+    printf '\e[s'  >&2
+    printf '\n'  >&2
+    printf "${C_BORDER}┌${border_line}┐${C_RESET}\n"  >&2
+    printf "${C_BORDER}│${C_RESET} ${C_STATUS}%-${max_inner}s${C_RESET} ${C_BORDER}│${C_RESET}\n" "$s"  >&2
+    if [[ -n "$c" ]]; then
+        printf "${C_BORDER}│${C_RESET} ${C_CONTENT}%-${max_inner}s${C_RESET} ${C_BORDER}│${C_RESET}\n" "$c"  >&2
+    fi
+    printf "${C_BORDER}└${border_line}┘${C_RESET}"  >&2
+    printf '\e[u'  >&2
+}
+
+# 清除之前渲染的框（用空行覆盖）
+function _auto_shell_clear_box() {
+    local box_width="${1:-60}"
+    local empty_line
+    printf -v empty_line '%*s' $(( box_width + 2 )) ''
+    printf '\e[s\n%s\n%s\n%s\e[u' "$empty_line" "$empty_line" "$empty_line"  >&2
+}
+
+# 通过 SSE 流式获取建议，实时更新框内容
+# 成功时将命令写入 BUFFER，返回 0；失败返回 1
+function _auto_shell_suggest_stream() {
+    local query="$1"
+    local json_data
+    if command -v jq >/dev/null 2>&1; then
+        json_data=$(jq -n \
+            --arg q "$query" --arg c "$PWD" \
+            --arg o "$(uname -s)" --arg s "zsh" \
+            '{query: $q, cwd: $c, os: $o, shell: $s}')
+    else
+        json_data="{\"query\":\"${query//\"/\\\"}\",\"cwd\":\"${PWD//\"/\\\"}\",\"os\":\"$(uname -s)\",\"shell\":\"zsh\"}"
+    fi
+
+    local fifo="/tmp/_auto_shell_sse_$$"
+    mkfifo "$fifo" 2>/dev/null || return 1
+
+    # 后台 curl 把 SSE 流写进 FIFO
+    curl -s --no-buffer -N -X POST \
+        "$AUTO_SHELL_DAEMON_URL/v1/suggest/stream" \
+        -H "Content-Type: application/json" \
+        -d "$json_data" --max-time 60 > "$fifo" 2>/dev/null &
+    local curl_pid=$!
+
+    local accumulated="" box_shown=0 chunk data
+
+    while IFS= read -r line; do
+        [[ "$line" != data:* ]] && continue
+        data="${line#data: }"
+        [[ "$data" == "[DONE]" ]] && break
+
+        if command -v jq >/dev/null 2>&1; then
+            chunk=$(printf '%s\n' "$data" | jq -r '.chunk // empty' 2>/dev/null)
+        else
+            chunk=$(printf '%s\n' "$data" | grep -o '"chunk":"[^"]*"' | sed 's/"chunk":"//;s/"//')
+        fi
+
+        [[ -z "$chunk" ]] && continue
+        accumulated+="$chunk"
+
+        # 实时更新框
+        if [[ $box_shown -eq 0 ]]; then
+            _auto_shell_render_box "🤖 auto-shell 正在生成..." "$accumulated"
+            box_shown=1
+        else
+            _auto_shell_clear_box
+            _auto_shell_render_box "🤖 auto-shell 正在生成..." "$accumulated"
+        fi
+    done < "$fifo"
+
+    wait "$curl_pid" 2>/dev/null
+    rm -f "$fifo"
+
+    [[ $box_shown -eq 1 ]] && _auto_shell_clear_box
+
+    if [[ -z "$accumulated" ]]; then
+        return 1
+    fi
+
+    # 从 SSE 累积内容中提取最终命令（最后一个 data 行的 command 字段，或直接用全文）
+    local final_cmd
+    if command -v jq >/dev/null 2>&1; then
+        final_cmd=$(printf '%s\n' "$accumulated" | \
+            grep -o '"command":"[^"]*"' | tail -1 | sed 's/"command":"//;s/"$//')
+        [[ -z "$final_cmd" ]] && final_cmd="$accumulated"
+    else
+        final_cmd="$accumulated"
+    fi
+
+    BUFFER="$final_cmd"
+    CURSOR=${#BUFFER}
+    return 0
+}
+
+
 # ============== 核心：双击 Tab ==============
 
 function _auto_shell_handle_tab() {
@@ -135,7 +250,17 @@ function _auto_shell_handle_tab() {
 
 function _auto_shell_request_suggestion() {
     local query="$BUFFER"
-    zle -M "🤖 auto-shell 正在思考..."
+    zle -R
+
+    # 优先尝试流式接口（实时展示生成 token）
+    if _auto_shell_suggest_stream "$query"; then
+        zle -M ""
+        zle -R
+        return
+    fi
+
+    # 流式失败，回退到同步接口
+    _auto_shell_render_box "🤖 auto-shell 正在思考..." ""
     zle -R
 
     local json_data
@@ -152,6 +277,7 @@ function _auto_shell_request_suggestion() {
     response=$(_auto_shell_curl_post "$AUTO_SHELL_DAEMON_URL/v1/suggest" "$json_data")
     http_code=$(printf '%s\n' "$response" | tail -n1)
     body=$(printf '%s\n' "$response" | sed '$d')
+    _auto_shell_clear_box
 
     if [[ "$http_code" != "200" ]]; then
         zle -M "❌ auto-shell: 连接失败 (HTTP $http_code)"
@@ -191,7 +317,7 @@ function _auto_shell_agent_start_session() {
     local task="$BUFFER"
     [[ -z "$task" ]] && { zle -M "⚠️  请先输入任务描述"; zle -R; return; }
 
-    zle -M "🤖 [Agent] 启动会话..."
+    _auto_shell_render_box "🤖 [Agent] 启动会话..." "任务: ${task:0:50}"
     zle -R
 
     local json_data
@@ -209,6 +335,7 @@ function _auto_shell_agent_start_session() {
     response=$(_auto_shell_curl_post "$AUTO_SHELL_DAEMON_URL/v1/agent/session/start" "$json_data" 60)
     http_code=$(printf '%s\n' "$response" | tail -n1)
     body=$(printf '%s\n' "$response" | sed '$d')
+    _auto_shell_clear_box
 
     if [[ "$http_code" != "200" ]]; then
         zle -M "❌ [Agent] 启动失败 (HTTP $http_code): $(echo $body | head -c 200)"
@@ -226,7 +353,7 @@ function _auto_shell_agent_start_session() {
 # ============== Agent 会话：请求下一步（手动触发）==============
 
 function _auto_shell_agent_get_next_suggestion() {
-    zle -M "🤖 [Agent] 请求下一步..."
+    _auto_shell_render_box "🤖 [Agent] 请求下一步..." "会话: ${_auto_shell_session_id:0:8}..."
     zle -R
 
     local json_data
@@ -240,6 +367,7 @@ function _auto_shell_agent_get_next_suggestion() {
     response=$(_auto_shell_curl_post "$AUTO_SHELL_DAEMON_URL/v1/agent/session/step" "$json_data" 60)
     http_code=$(printf '%s\n' "$response" | tail -n1)
     body=$(printf '%s\n' "$response" | sed '$d')
+    _auto_shell_clear_box
 
     if [[ "$http_code" == "404" ]]; then
         zle -M "⚠️  [Agent] 会话已过期，请重新启动任务"
